@@ -1,5 +1,7 @@
 package com.example.weather
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -10,8 +12,11 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
 import com.squareup.picasso.Picasso
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,9 +77,27 @@ interface WeatherApiService {
         @Query("lang") lang: String = "ru"
     ): WeatherResponse
 
+    @GET("weather")
+    suspend fun getWeatherByLocation(
+        @Query("lat") lat: Double,
+        @Query("lon") lon: Double,
+        @Query("appid") apiKey: String,
+        @Query("units") units: String = "metric",
+        @Query("lang") lang: String = "ru"
+    ): WeatherResponse
+
     @GET("forecast")
     suspend fun getForecast(
         @Query("q") city: String,
+        @Query("appid") apiKey: String,
+        @Query("units") units: String = "metric",
+        @Query("lang") lang: String = "ru"
+    ): ForecastResponse
+
+    @GET("forecast")
+    suspend fun getForecastByLocation(
+        @Query("lat") lat: Double,
+        @Query("lon") lon: Double,
         @Query("appid") apiKey: String,
         @Query("units") units: String = "metric",
         @Query("lang") lang: String = "ru"
@@ -115,10 +138,14 @@ class MainActivity : AppCompatActivity() {
         .addConverterFactory(GsonConverterFactory.create())
         .build()
     private val weatherService = retrofit.create(WeatherApiService::class.java)
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    private val LOCATION_PERMISSION_REQUEST_CODE = 1001
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
         val cityEditText: EditText = findViewById(R.id.cityEditText)
         val cityTextView: TextView = findViewById(R.id.cityTextView)
@@ -128,6 +155,7 @@ class MainActivity : AppCompatActivity() {
         val lastUpdatedTextView: TextView = findViewById(R.id.lastUpdatedTextView)
         val weatherIcon: ImageView = findViewById(R.id.weatherIcon)
         val refreshButton: Button = findViewById(R.id.refreshButton)
+        val locationButton: Button = findViewById(R.id.locationButton)
         val progressBar: ProgressBar = findViewById(R.id.progressBar)
         val forecastRecyclerView: RecyclerView = findViewById(R.id.forecastRecyclerView)
 
@@ -138,7 +166,7 @@ class MainActivity : AppCompatActivity() {
                 (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)) {
                 val city = cityEditText.text.toString().trim()
                 if (city.isNotEmpty()) {
-                    fetchWeatherData(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView, city)
+                    fetchWeatherDataByCity(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView, city)
                     true
                 } else {
                     Toast.makeText(this, "Введите город", Toast.LENGTH_SHORT).show()
@@ -152,13 +180,41 @@ class MainActivity : AppCompatActivity() {
         refreshButton.setOnClickListener {
             val city = cityEditText.text.toString().trim()
             if (city.isNotEmpty()) {
-                fetchWeatherData(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView, city)
+                fetchWeatherDataByCity(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView, city)
             } else {
                 Toast.makeText(this, "Введите город", Toast.LENGTH_SHORT).show()
             }
         }
 
-        fetchWeatherData(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView, "Moscow")
+        locationButton.setOnClickListener {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), LOCATION_PERMISSION_REQUEST_CODE)
+            } else {
+                fetchWeatherDataByLocation(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView)
+            }
+        }
+
+        fetchWeatherDataByCity(cityTextView, temperatureTextView, humidityTextView, conditionTextView, lastUpdatedTextView, weatherIcon, progressBar, forecastRecyclerView, "Moscow")
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                fetchWeatherDataByLocation(
+                    findViewById(R.id.cityTextView),
+                    findViewById(R.id.temperatureTextView),
+                    findViewById(R.id.humidityTextView),
+                    findViewById(R.id.conditionTextView),
+                    findViewById(R.id.lastUpdatedTextView),
+                    findViewById(R.id.weatherIcon),
+                    findViewById(R.id.progressBar),
+                    findViewById(R.id.forecastRecyclerView)
+                )
+            } else {
+                Toast.makeText(this, "Разрешение на геолокацию отклонено", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun interpolateForecast(forecastItems: List<ForecastItem>, timezoneOffset: Int): List<InterpolatedForecastItem> {
@@ -206,7 +262,7 @@ class MainActivity : AppCompatActivity() {
         return result
     }
 
-    private fun fetchWeatherData(
+    private fun fetchWeatherDataByCity(
         cityTextView: TextView,
         temperatureTextView: TextView,
         humidityTextView: TextView,
@@ -266,6 +322,81 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 progressBar.visibility = View.GONE
             }
+        }
+    }
+
+    private fun fetchWeatherDataByLocation(
+        cityTextView: TextView,
+        temperatureTextView: TextView,
+        humidityTextView: TextView,
+        conditionTextView: TextView,
+        lastUpdatedTextView: TextView,
+        weatherIcon: ImageView,
+        progressBar: ProgressBar,
+        forecastRecyclerView: RecyclerView
+    ) {
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        progressBar.visibility = View.VISIBLE
+        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            if (location != null) {
+                CoroutineScope(Dispatchers.Main).launch {
+                    try {
+                        val weatherResponse = weatherService.getWeatherByLocation(location.latitude, location.longitude, apiKey)
+                        val forecastResponse = try {
+                            weatherService.getForecastByLocation(location.latitude, location.longitude, apiKey)
+                        } catch (e: Exception) {
+                            ForecastResponse(emptyList())
+                        }
+                        cityTextView.text = weatherResponse.name
+                        temperatureTextView.text = "${weatherResponse.main.temp.toInt()}°C"
+                        humidityTextView.text = "Влажность: ${weatherResponse.main.humidity}%"
+                        conditionTextView.text = weatherResponse.weather.getOrNull(0)?.description?.capitalize() ?: "Нет данных"
+                        val localTime = Calendar.getInstance().apply {
+                            add(Calendar.SECOND, weatherResponse.timezone)
+                            timeZone = TimeZone.getTimeZone("UTC")
+                        }.time
+                        lastUpdatedTextView.text = "Обновлено: ${
+                            SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault()).format(localTime)
+                        }"
+                        Picasso.get().load("https://openweathermap.org/img/wn/${weatherResponse.weather.getOrNull(0)?.icon ?: "01d"}@2x.png")
+                            .error(android.R.drawable.ic_menu_close_clear_cancel)
+                            .into(weatherIcon)
+                        val interpolatedForecast = interpolateForecast(forecastResponse.list, weatherResponse.timezone)
+                        forecastRecyclerView.adapter = ForecastAdapter(interpolatedForecast)
+                    } catch (e: HttpException) {
+                        val errorMessage = when (e.code()) {
+                            404 -> "Местоположение не найдено"
+                            401 -> "Неверный API-ключ"
+                            else -> "Ошибка сервера: ${e.code()}"
+                        }
+                        Toast.makeText(this@MainActivity, errorMessage, Toast.LENGTH_LONG).show()
+                        cityTextView.text = "Ошибка"
+                        temperatureTextView.text = "--°C"
+                        humidityTextView.text = "Влажность: --%"
+                        conditionTextView.text = "Не удалось загрузить"
+                        lastUpdatedTextView.text = "Обновлено: --"
+                        forecastRecyclerView.adapter = ForecastAdapter(emptyList())
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "Ошибка: ${e.message}", Toast.LENGTH_LONG).show()
+                        cityTextView.text = "Ошибка"
+                        temperatureTextView.text = "--°C"
+                        humidityTextView.text = "Влажность: --%"
+                        conditionTextView.text = "Не удалось загрузить"
+                        lastUpdatedTextView.text = "Обновлено: --"
+                        forecastRecyclerView.adapter = ForecastAdapter(emptyList())
+                    } finally {
+                        progressBar.visibility = View.GONE
+                    }
+                }
+            } else {
+                progressBar.visibility = View.GONE
+                Toast.makeText(this, "Не удалось определить местоположение", Toast.LENGTH_LONG).show()
+            }
+        }.addOnFailureListener {
+            progressBar.visibility = View.GONE
+            Toast.makeText(this, "Ошибка геолокации: ${it.message}", Toast.LENGTH_LONG).show()
         }
     }
 }
